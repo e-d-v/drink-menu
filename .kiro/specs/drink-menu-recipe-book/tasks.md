@@ -8,7 +8,7 @@ Implement the drink menu and recipe book web application incrementally: database
 
 - [ ] 1. Set up database schema and backend project structure
   - Create the MariaDB schema with all tables: `ingredients`, `drinks`, `drink_ingredients`, `recipes`, `admins`, `sessions`
-  - Set up Python 3.11.14 project with `requirements.txt` (Flask or FastAPI, PyMySQL/mysql-connector, bcrypt, hypothesis, pytest)
+  - Set up Python 3.11.14 project with `requirements.txt` (FastAPI, mysql-connector, bcrypt, hypothesis, pytest)
   - Create database connection module with connection pooling
   - Seed one admin user with a bcrypt-hashed password for initial access
   - _Requirements: 10.1, 10.3_
