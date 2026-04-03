@@ -6,7 +6,7 @@ Implement the drink menu and recipe book web application incrementally: database
 
 ## Tasks
 
-- [ ] 1. Set up database schema and backend project structure
+- [x] 1. Set up database schema and backend project structure
   - Create the MariaDB schema with all tables: `ingredients`, `drinks`, `drink_ingredients`, `recipes`, `admins`, `sessions`
   - Set up Python 3.11.14 project with `requirements.txt` (FastAPI, mysql-connector, bcrypt, hypothesis, pytest)
   - Create database connection module with connection pooling
@@ -51,7 +51,14 @@ Implement the drink menu and recipe book web application incrementally: database
     - Return 401 if missing, invalid, or expired
     - _Requirements: 4.6_
 
-  - [ ]* 3.4 Write property test for API auth rejection
+  - [ ] 3.4 Write unit tests for auth endpoints
+    - Login returns token on valid credentials
+    - Login returns 401 on invalid credentials
+    - Logout invalidates token (subsequent request with same token returns 401)
+    - Missing auth header returns 401 on all `/admin/*` routes
+    - _Requirements: 4.2, 4.3, 4.5, 4.6_
+
+  - [ ]* 3.5 Write property test for API auth rejection
     - **Property 8: API rejects unauthenticated admin requests**
     - **Validates: Requirements 4.6**
 
@@ -66,11 +73,16 @@ Implement the drink menu and recipe book web application incrementally: database
   - [ ] 4.3 Implement `PATCH /admin/ingredients/:id` — toggle `in_cabinet` status
     - _Requirements: 5.2_
 
-  - [ ]* 4.4 Write property test for cabinet toggle round-trip
+  - [ ] 4.4 Write unit tests for admin ingredient endpoints
+    - Duplicate ingredient name returns 409
+    - Edit/delete non-existent ingredient returns 404
+    - _Requirements: 5.3, 5.4_
+
+  - [ ]* 4.5 Write property test for cabinet toggle round-trip
     - **Property 10: Cabinet toggle round-trip**
     - **Validates: Requirements 5.2**
 
-  - [ ]* 4.5 Write property test for add ingredient round-trip
+  - [ ]* 4.6 Write property test for add ingredient round-trip
     - **Property 11: Add ingredient round-trip**
     - **Validates: Requirements 5.3**
 
@@ -115,11 +127,18 @@ Implement the drink menu and recipe book web application incrementally: database
     - Return 404 if drink not found; cascade deletes handled by FK constraints
     - _Requirements: 8.4_
 
-  - [ ]* 5.11 Write property test for delete drink removes record
+  - [ ] 5.11 Write unit tests for admin drink endpoints
+    - Edit non-existent drink returns 404
+    - Delete non-existent drink returns 404
+    - Missing required field on create returns 400 with error message
+    - ABV out of range returns 400
+    - _Requirements: 8.3, 8.4, 10.1, 10.2, 10.4_
+
+  - [ ]* 5.12 Write property test for delete drink removes record
     - **Property 18: Delete drink removes record**
     - **Validates: Requirements 8.4**
 
-  - [ ]* 5.12 Write property test for image URL round-trip
+  - [ ]* 5.13 Write property test for image URL round-trip
     - **Property 19: Image URL round-trip**
     - **Validates: Requirements 9.2**
 
@@ -141,7 +160,13 @@ Implement the drink menu and recipe book web application incrementally: database
   - [ ] 8.2 Implement `AuthGuard` — redirect to `/admin/login` if no valid token in storage
     - _Requirements: 4.4_
 
-  - [ ]* 8.3 Write property test for auth guard covers all admin routes
+  - [ ] 8.3 Write unit tests for AuthService and AuthGuard
+    - `AuthGuard` redirects to `/admin/login` when no token is present
+    - `LoginComponent` shows error message on 401 response
+    - `LoginComponent` stores token on successful login
+    - _Requirements: 4.2, 4.3, 4.4_
+
+  - [ ]* 8.4 Write property test for auth guard covers all admin routes
     - **Property 7: Auth guard covers all admin routes**
     - **Validates: Requirements 4.4**
 
@@ -171,8 +196,8 @@ Implement the drink menu and recipe book web application incrementally: database
     - Client-side sort by ABV ascending/descending
     - Client-side filter by selected ingredients (only cabinet ingredients shown as filter options)
     - Show "no drinks available" message when filtered list is empty
-    - Navigate to `/drink/:id` for inline recipes; redirect browser for link recipes
-    - _Requirements: 1.1, 2.1, 2.2, 2.3, 2.4_
+    - On drink card click, check `recipe_type` from the already-loaded drink list: navigate to `/drink/:id` for `inline` type; redirect browser directly to the stored URL for `link` type (no additional API call needed)
+    - _Requirements: 1.1, 2.1, 2.2, 2.3, 2.4, 3.3_
 
   - [ ]* 9.4 Write property test for ingredient filter correctness
     - **Property 3: Ingredient filter correctness**
@@ -190,6 +215,12 @@ Implement the drink menu and recipe book web application incrementally: database
   - [ ]* 9.7 Write property test for newline rendering in instructions
     - **Property 5: Newline rendering in instructions**
     - **Validates: Requirements 3.2**
+
+  - [ ] 9.8 Write unit tests for public-facing components
+    - `DrinkMenuComponent` loads drinks on init and renders empty state when list is empty
+    - `DrinkMenuComponent` redirects browser for link-type drinks on card click
+    - `RecipeDetailComponent` navigates back to menu on 404
+    - _Requirements: 1.1, 2.4, 3.3_
 
 - [ ] 10. Implement admin Angular components
   - [ ] 10.1 Implement `LoginComponent` — admin login form, store token on success, show error on 401
@@ -218,7 +249,12 @@ Implement the drink menu and recipe book web application incrementally: database
     - **Property 16: Edit form pre-population**
     - **Validates: Requirements 8.2**
 
-  - [ ] 10.7 Implement `RecipeManagerComponent` — list all drinks, link to edit form, confirm-then-delete
+  - [ ] 10.7 Write unit tests for admin components
+    - `RecipeFormComponent` does not call API when form is invalid
+    - `RecipeDetailComponent` navigates to external URL for link-type drinks
+    - _Requirements: 6.3, 7.3_
+
+  - [ ] 10.8 Implement `RecipeManagerComponent` — list all drinks, link to edit form, confirm-then-delete
     - Show error notification on API error during edit or delete
     - _Requirements: 8.1, 8.4, 8.5_
 

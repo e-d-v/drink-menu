@@ -1,2 +1,4 @@
 .vscode/
 .config.kiro
+*.pyc
+*/__pycache__
