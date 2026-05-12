@@ -19,7 +19,7 @@ Implement the drink menu and recipe book web application incrementally: database
     - Return JSON array of drink list items (id, name, image_url, abv, recipe_type)
     - _Requirements: 1.1, 1.2_
 
-  - [-] 2.2 Write property test for cabinet filtering correctness
+  - [x] 2.2 Write property test for cabinet filtering correctness
     - **Property 1: Cabinet filtering correctness**
     - **Validates: Requirements 1.2**
 
