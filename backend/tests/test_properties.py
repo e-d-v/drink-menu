@@ -486,3 +486,99 @@ class TestGetDrinkById:
         assert response.json()["image_url"] is None
 
         sqlite_conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for GET /ingredients  (task 2.5, Requirements 2.2)
+# ---------------------------------------------------------------------------
+
+class TestGetIngredients:
+    """Unit tests for GET /ingredients."""
+
+    def _make_db(self):
+        """Return a fresh in-memory SQLite connection with the base schema."""
+        return _make_sqlite_conn()
+
+    def test_returns_only_in_cabinet_ingredients(self):
+        """Only ingredients with in_cabinet=true are returned."""
+        conn = self._make_db()
+        conn.execute("INSERT INTO ingredients (name, in_cabinet) VALUES (?, ?)", ("Tequila", 1))
+        conn.execute("INSERT INTO ingredients (name, in_cabinet) VALUES (?, ?)", ("Vodka", 0))
+        conn.execute("INSERT INTO ingredients (name, in_cabinet) VALUES (?, ?)", ("Rum", 1))
+        conn.commit()
+
+        fake_conn = _FakeConnection(conn)
+        with patch.object(app_module, "get_connection", return_value=fake_conn):
+            client = TestClient(app)
+            response = client.get("/ingredients")
+
+        assert response.status_code == 200
+        data = response.json()
+        names = {item["name"] for item in data}
+        assert names == {"Tequila", "Rum"}
+        assert "Vodka" not in names
+        conn.close()
+
+    def test_returns_correct_json_shape(self):
+        """Each ingredient object has id, name, and in_cabinet fields."""
+        conn = self._make_db()
+        conn.execute("INSERT INTO ingredients (name, in_cabinet) VALUES (?, ?)", ("Gin", 1))
+        conn.commit()
+
+        fake_conn = _FakeConnection(conn)
+        with patch.object(app_module, "get_connection", return_value=fake_conn):
+            client = TestClient(app)
+            response = client.get("/ingredients")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        item = data[0]
+        assert "id" in item
+        assert item["name"] == "Gin"
+        assert item["in_cabinet"] is True
+        conn.close()
+
+    def test_returns_empty_list_when_none_in_cabinet(self):
+        """Returns an empty list when no ingredients are in the cabinet."""
+        conn = self._make_db()
+        conn.execute("INSERT INTO ingredients (name, in_cabinet) VALUES (?, ?)", ("Whiskey", 0))
+        conn.commit()
+
+        fake_conn = _FakeConnection(conn)
+        with patch.object(app_module, "get_connection", return_value=fake_conn):
+            client = TestClient(app)
+            response = client.get("/ingredients")
+
+        assert response.status_code == 200
+        assert response.json() == []
+        conn.close()
+
+    def test_returns_empty_list_when_table_is_empty(self):
+        """Returns an empty list when the ingredients table has no rows."""
+        conn = self._make_db()
+
+        fake_conn = _FakeConnection(conn)
+        with patch.object(app_module, "get_connection", return_value=fake_conn):
+            client = TestClient(app)
+            response = client.get("/ingredients")
+
+        assert response.status_code == 200
+        assert response.json() == []
+        conn.close()
+
+    def test_in_cabinet_field_is_boolean(self):
+        """The in_cabinet field in the response is a JSON boolean, not an integer."""
+        conn = self._make_db()
+        conn.execute("INSERT INTO ingredients (name, in_cabinet) VALUES (?, ?)", ("Lime Juice", 1))
+        conn.commit()
+
+        fake_conn = _FakeConnection(conn)
+        with patch.object(app_module, "get_connection", return_value=fake_conn):
+            client = TestClient(app)
+            response = client.get("/ingredients")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data[0]["in_cabinet"] is True  # must be bool True, not int 1
+        conn.close()

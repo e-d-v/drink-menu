@@ -13,7 +13,7 @@ Implement the drink menu and recipe book web application incrementally: database
   - Seed one admin user with a bcrypt-hashed password for initial access
   - _Requirements: 10.1, 10.3_
 
-- [ ] 2. Implement public drink endpoints
+- [x] 2. Implement public drink endpoints
   - [x] 2.1 Implement `GET /drinks` — return only drinks whose every ingredient has `in_cabinet = true`
     - Query joins `drinks`, `drink_ingredients`, `ingredients` and filters by cabinet availability
     - Return JSON array of drink list items (id, name, image_url, abv, recipe_type)
@@ -32,7 +32,7 @@ Implement the drink menu and recipe book web application incrementally: database
     - **Property 6: Recipe type round-trip**
     - **Validates: Requirements 3.4**
 
-  - [ ] 2.5 Implement `GET /ingredients` — return all ingredients with `in_cabinet = true`
+  - [x] 2.5 Implement `GET /ingredients` — return all ingredients with `in_cabinet = true`
     - _Requirements: 2.2_
 
 - [ ] 3. Implement authentication endpoints

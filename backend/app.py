@@ -23,6 +23,34 @@ def health_check():
     return {"status": "ok"}
 
 
+@app.get("/ingredients")
+def list_ingredients():
+    """Return all ingredients where in_cabinet = true.
+
+    Requirements 2.2
+    """
+    query = """
+        SELECT id, name, in_cabinet
+        FROM ingredients
+        WHERE in_cabinet = TRUE
+        ORDER BY name
+    """
+    conn = get_connection()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        cursor.close()
+    finally:
+        conn.close()
+
+    # Ensure in_cabinet is a proper boolean in the response
+    for row in rows:
+        row["in_cabinet"] = bool(row["in_cabinet"])
+
+    return rows
+
+
 @app.get("/drinks")
 def list_drinks():
     """Return drinks whose every ingredient is in the cabinet.
