@@ -266,3 +266,173 @@ def test_property_1_cabinet_filtering_correctness(ingredients, drinks_seed):
         )
 
     sqlite_conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Unit tests for GET /drinks/:id  (task 2.3, Requirements 3.4)
+# ---------------------------------------------------------------------------
+
+_SCHEMA_WITH_RECIPES = _SCHEMA + """
+CREATE TABLE IF NOT EXISTS recipes (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    drink_id     INTEGER NOT NULL UNIQUE,
+    instructions TEXT,
+    url          TEXT,
+    FOREIGN KEY (drink_id) REFERENCES drinks(id) ON DELETE CASCADE
+);
+"""
+
+
+def _make_sqlite_conn_with_recipes() -> sqlite3.Connection:
+    """Return a SQLite connection with the full schema (including recipes)."""
+    conn = sqlite3.connect(":memory:", check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.executescript(_SCHEMA_WITH_RECIPES)
+    conn.commit()
+    return conn
+
+
+def _seed_drink(conn, *, name="Margarita", abv=150, recipe_type="inline",
+                image_url=None, instructions="Shake well.", url=None,
+                ingredient_names=("Tequila", "Lime Juice")):
+    """Insert a drink + recipe + ingredients into the SQLite DB; return drink_id."""
+    cur = conn.execute(
+        "INSERT INTO drinks (name, image_url, abv, recipe_type) VALUES (?, ?, ?, ?)",
+        (name, image_url, abv, recipe_type),
+    )
+    drink_id = cur.lastrowid
+
+    conn.execute(
+        "INSERT INTO recipes (drink_id, instructions, url) VALUES (?, ?, ?)",
+        (drink_id, instructions, url),
+    )
+
+    for ing_name in ingredient_names:
+        # Insert ingredient if not already present
+        conn.execute(
+            "INSERT OR IGNORE INTO ingredients (name, in_cabinet) VALUES (?, 1)",
+            (ing_name,),
+        )
+        ing_row = conn.execute(
+            "SELECT id FROM ingredients WHERE name = ?", (ing_name,)
+        ).fetchone()
+        conn.execute(
+            "INSERT INTO drink_ingredients (drink_id, ingredient_id) VALUES (?, ?)",
+            (drink_id, ing_row[0]),
+        )
+
+    conn.commit()
+    return drink_id
+
+
+class TestGetDrinkById:
+    """Unit tests for GET /drinks/{drink_id}."""
+
+    def test_returns_drink_with_all_fields(self):
+        """A found drink includes id, name, image_url, abv, recipe_type,
+        ingredients, instructions, and url."""
+        sqlite_conn = _make_sqlite_conn_with_recipes()
+        drink_id = _seed_drink(
+            sqlite_conn,
+            name="Margarita",
+            abv=150,
+            recipe_type="inline",
+            image_url="https://example.com/margarita.jpg",
+            instructions="Combine ingredients.\nShake well.",
+            url=None,
+            ingredient_names=["Tequila", "Triple Sec", "Lime Juice"],
+        )
+
+        fake_conn = _FakeConnection(sqlite_conn)
+        with patch.object(app_module, "get_connection", return_value=fake_conn):
+            client = TestClient(app)
+            response = client.get(f"/drinks/{drink_id}")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["id"] == drink_id
+        assert data["name"] == "Margarita"
+        assert data["image_url"] == "https://example.com/margarita.jpg"
+        assert data["abv"] == 150
+        assert data["recipe_type"] == "inline"
+        assert data["instructions"] == "Combine ingredients.\nShake well."
+        assert data["url"] is None
+        assert sorted(data["ingredients"]) == ["Lime Juice", "Tequila", "Triple Sec"]
+
+        sqlite_conn.close()
+
+    def test_returns_404_for_nonexistent_drink(self):
+        """A request for a drink ID that does not exist returns 404 with error body."""
+        sqlite_conn = _make_sqlite_conn_with_recipes()
+
+        fake_conn = _FakeConnection(sqlite_conn)
+        with patch.object(app_module, "get_connection", return_value=fake_conn):
+            client = TestClient(app)
+            response = client.get("/drinks/9999")
+
+        assert response.status_code == 404
+        assert response.json() == {"error": "Not found"}
+
+        sqlite_conn.close()
+
+    def test_link_type_drink_returns_url_and_null_instructions(self):
+        """A link-type drink returns the url field and null instructions."""
+        sqlite_conn = _make_sqlite_conn_with_recipes()
+        drink_id = _seed_drink(
+            sqlite_conn,
+            name="Mojito",
+            abv=80,
+            recipe_type="link",
+            instructions=None,
+            url="https://example.com/mojito-recipe",
+            ingredient_names=["Rum", "Mint"],
+        )
+
+        fake_conn = _FakeConnection(sqlite_conn)
+        with patch.object(app_module, "get_connection", return_value=fake_conn):
+            client = TestClient(app)
+            response = client.get(f"/drinks/{drink_id}")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["recipe_type"] == "link"
+        assert data["url"] == "https://example.com/mojito-recipe"
+        assert data["instructions"] is None
+
+        sqlite_conn.close()
+
+    def test_ingredients_list_is_present_and_ordered(self):
+        """The ingredients field is a list of ingredient name strings."""
+        sqlite_conn = _make_sqlite_conn_with_recipes()
+        drink_id = _seed_drink(
+            sqlite_conn,
+            ingredient_names=["Vodka", "Orange Juice", "Grenadine"],
+        )
+
+        fake_conn = _FakeConnection(sqlite_conn)
+        with patch.object(app_module, "get_connection", return_value=fake_conn):
+            client = TestClient(app)
+            response = client.get(f"/drinks/{drink_id}")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert isinstance(data["ingredients"], list)
+        assert sorted(data["ingredients"]) == sorted(["Vodka", "Orange Juice", "Grenadine"])
+
+        sqlite_conn.close()
+
+    def test_drink_with_no_image_url_returns_null(self):
+        """A drink without an image URL returns null for image_url."""
+        sqlite_conn = _make_sqlite_conn_with_recipes()
+        drink_id = _seed_drink(sqlite_conn, image_url=None)
+
+        fake_conn = _FakeConnection(sqlite_conn)
+        with patch.object(app_module, "get_connection", return_value=fake_conn):
+            client = TestClient(app)
+            response = client.get(f"/drinks/{drink_id}")
+
+        assert response.status_code == 200
+        assert response.json()["image_url"] is None
+
+        sqlite_conn.close()

@@ -2,6 +2,7 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from db import get_connection
 
@@ -54,3 +55,56 @@ def list_drinks():
         conn.close()
 
     return rows
+
+
+@app.get("/drinks/{drink_id}")
+def get_drink(drink_id: int):
+    """Return a single drink with full recipe detail.
+
+    Includes ingredients list, instructions, and url fields.
+    Returns 404 if the drink is not found (Requirements 3.4).
+    """
+    conn = get_connection()
+    try:
+        cursor = conn.cursor(dictionary=True)
+
+        # Fetch the drink row
+        cursor.execute(
+            """
+            SELECT
+                d.id,
+                d.name,
+                d.image_url,
+                d.abv,
+                d.recipe_type,
+                r.instructions,
+                r.url
+            FROM drinks d
+            LEFT JOIN recipes r ON r.drink_id = d.id
+            WHERE d.id = %s
+            """,
+            (drink_id,),
+        )
+        drink = cursor.fetchone()
+
+        if drink is None:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+
+        # Fetch the ingredient names for this drink
+        cursor.execute(
+            """
+            SELECT i.name
+            FROM drink_ingredients di
+            JOIN ingredients i ON i.id = di.ingredient_id
+            WHERE di.drink_id = %s
+            ORDER BY i.name
+            """,
+            (drink_id,),
+        )
+        ingredient_rows = cursor.fetchall()
+        cursor.close()
+    finally:
+        conn.close()
+
+    drink["ingredients"] = [row["name"] for row in ingredient_rows]
+    return drink

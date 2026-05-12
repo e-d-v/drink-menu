@@ -23,7 +23,7 @@ Implement the drink menu and recipe book web application incrementally: database
     - **Property 1: Cabinet filtering correctness**
     - **Validates: Requirements 1.2**
 
-  - [ ] 2.3 Implement `GET /drinks/:id` — return single drink with recipe detail
+  - [x] 2.3 Implement `GET /drinks/:id` — return single drink with recipe detail
     - Include ingredients list, instructions, and url fields
     - Return 404 if drink not found
     - _Requirements: 3.4_
