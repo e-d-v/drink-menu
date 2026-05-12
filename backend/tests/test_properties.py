@@ -7,12 +7,11 @@
 import sqlite3
 import sys
 import os
-from contextlib import contextmanager
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
-from hypothesis import given, settings, assume
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 # ---------------------------------------------------------------------------
@@ -20,13 +19,13 @@ from hypothesis import strategies as st
 # ---------------------------------------------------------------------------
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-import app as app_module  # noqa: E402  (import after sys.path manipulation)
+import app as app_module  # noqa: E402
 from app import app  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# SQLite in-memory database helpers
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Database infrastructure
+# ===========================================================================
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS ingredients (
@@ -50,230 +49,7 @@ CREATE TABLE IF NOT EXISTS drink_ingredients (
     FOREIGN KEY (drink_id)      REFERENCES drinks(id)      ON DELETE CASCADE,
     FOREIGN KEY (ingredient_id) REFERENCES ingredients(id) ON DELETE CASCADE
 );
-"""
 
-
-def _make_sqlite_conn(db_path: str = ":memory:") -> sqlite3.Connection:
-    """Return a SQLite connection with the test schema applied."""
-    conn = sqlite3.connect(db_path, check_same_thread=False)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.executescript(_SCHEMA)
-    conn.commit()
-    return conn
-
-
-class _FakeConnection:
-    """Thin wrapper that makes a sqlite3.Connection look like a mysql-connector
-    connection to the extent that app.py uses it (cursor, close)."""
-
-    def __init__(self, sqlite_conn: sqlite3.Connection) -> None:
-        self._conn = sqlite_conn
-
-    def cursor(self, dictionary: bool = False):
-        cur = self._conn.cursor()
-        if dictionary:
-            # Wrap so .fetchall() returns list-of-dicts
-            return _DictCursor(cur)
-        return cur
-
-    def close(self):
-        # Do NOT close the underlying connection — we reuse it across calls.
-        pass
-
-    def commit(self):
-        self._conn.commit()
-
-
-class _DictCursor:
-    """Wraps a sqlite3.Cursor and makes fetchall() return list[dict]."""
-
-    def __init__(self, cursor: sqlite3.Cursor) -> None:
-        self._cur = cursor
-
-    def execute(self, query: str, params=None):
-        # Translate MySQL-style %s placeholders to SQLite-style ?
-        translated = query.replace("%s", "?")
-        # SQLite uses 1/0 for booleans; translate TRUE/FALSE literals
-        translated = translated.replace("= TRUE", "= 1").replace("= FALSE", "= 0")
-        if params is not None:
-            self._cur.execute(translated, params)
-        else:
-            self._cur.execute(translated)
-
-    def fetchall(self):
-        columns = [desc[0] for desc in self._cur.description]
-        return [dict(zip(columns, row)) for row in self._cur.fetchall()]
-
-    def fetchone(self):
-        row = self._cur.fetchone()
-        if row is None:
-            return None
-        columns = [desc[0] for desc in self._cur.description]
-        return dict(zip(columns, row))
-
-    def close(self):
-        self._cur.close()
-
-    @property
-    def lastrowid(self):
-        return self._cur.lastrowid
-
-
-# ---------------------------------------------------------------------------
-# Hypothesis strategies
-# ---------------------------------------------------------------------------
-
-# A non-empty, printable text string (no NUL bytes, reasonable length)
-_name_st = st.text(
-    alphabet=st.characters(whitelist_categories=("Lu", "Ll", "Nd"), min_codepoint=32),
-    min_size=1,
-    max_size=40,
-)
-
-# An ingredient: (name, in_cabinet)
-_ingredient_st = st.fixed_dictionaries(
-    {
-        "name": _name_st,
-        "in_cabinet": st.booleans(),
-    }
-)
-
-# A drink: (name, abv, recipe_type, ingredient_indices)
-# ingredient_indices is a list of indices into the ingredient list
-def _drink_st(num_ingredients: int):
-    if num_ingredients == 0:
-        return st.nothing()
-    return st.fixed_dictionaries(
-        {
-            "name": _name_st,
-            "abv": st.integers(min_value=0, max_value=1000),
-            "recipe_type": st.sampled_from(["inline", "link"]),
-            # Each drink has 1..min(4, num_ingredients) ingredients
-            "ingredient_indices": st.lists(
-                st.integers(min_value=0, max_value=num_ingredients - 1),
-                min_size=1,
-                max_size=min(4, num_ingredients),
-                unique=True,
-            ),
-        }
-    )
-
-
-# ---------------------------------------------------------------------------
-# Property 1: Cabinet filtering correctness
-# ---------------------------------------------------------------------------
-
-@settings(max_examples=100)
-@given(
-    ingredients=st.lists(_ingredient_st, min_size=1, max_size=8).filter(
-        lambda lst: len({i["name"] for i in lst}) == len(lst)  # unique names
-    ),
-    drinks_seed=st.data(),
-)
-def test_property_1_cabinet_filtering_correctness(ingredients, drinks_seed):
-    """Property 1: Cabinet filtering correctness.
-
-    For any set of drinks in the database and any cabinet configuration,
-    GET /drinks returns ONLY drinks for which every associated ingredient
-    has in_cabinet = true, AND includes ALL such drinks.
-
-    Validates: Requirements 1.2
-    """
-    # Feature: drink-menu-recipe-book, Property 1: Cabinet filtering correctness
-
-    num_ingredients = len(ingredients)
-
-    # Draw a list of drinks (may be empty)
-    drinks = drinks_seed.draw(
-        st.lists(_drink_st(num_ingredients), min_size=0, max_size=6)
-    )
-
-    # -----------------------------------------------------------------------
-    # Build an in-memory SQLite database and populate it
-    # -----------------------------------------------------------------------
-    sqlite_conn = _make_sqlite_conn()
-
-    # Insert ingredients
-    ingredient_ids = []
-    for ing in ingredients:
-        cur = sqlite_conn.execute(
-            "INSERT INTO ingredients (name, in_cabinet) VALUES (?, ?)",
-            (ing["name"], 1 if ing["in_cabinet"] else 0),
-        )
-        ingredient_ids.append(cur.lastrowid)
-    sqlite_conn.commit()
-
-    # Insert drinks and their ingredient links
-    drink_ids = []
-    for drink in drinks:
-        cur = sqlite_conn.execute(
-            "INSERT INTO drinks (name, image_url, abv, recipe_type) VALUES (?, ?, ?, ?)",
-            (drink["name"], None, drink["abv"], drink["recipe_type"]),
-        )
-        drink_id = cur.lastrowid
-        drink_ids.append(drink_id)
-        for idx in drink["ingredient_indices"]:
-            sqlite_conn.execute(
-                "INSERT INTO drink_ingredients (drink_id, ingredient_id) VALUES (?, ?)",
-                (drink_id, ingredient_ids[idx]),
-            )
-    sqlite_conn.commit()
-
-    # -----------------------------------------------------------------------
-    # Compute the expected set of available drink IDs (pure Python oracle)
-    # -----------------------------------------------------------------------
-    cabinet_set = {
-        ingredient_ids[i]
-        for i, ing in enumerate(ingredients)
-        if ing["in_cabinet"]
-    }
-
-    expected_available_ids = set()
-    for drink, drink_id in zip(drinks, drink_ids):
-        drink_ingredient_ids = {ingredient_ids[idx] for idx in drink["ingredient_indices"]}
-        # A drink is available iff it has ≥1 ingredient and ALL are in cabinet
-        if drink_ingredient_ids and drink_ingredient_ids.issubset(cabinet_set):
-            expected_available_ids.add(drink_id)
-
-    # -----------------------------------------------------------------------
-    # Patch db.get_connection to return our fake SQLite connection
-    # -----------------------------------------------------------------------
-    fake_conn = _FakeConnection(sqlite_conn)
-
-    with patch.object(app_module, "get_connection", return_value=fake_conn):
-        client = TestClient(app)
-        response = client.get("/drinks")
-
-    assert response.status_code == 200
-    result = response.json()
-    returned_ids = {drink["id"] for drink in result}
-
-    # -----------------------------------------------------------------------
-    # Assert both directions of the property
-    # -----------------------------------------------------------------------
-
-    # Direction 1: Every drink in the response must have ALL ingredients in cabinet
-    for drink_item in result:
-        assert drink_item["id"] in expected_available_ids, (
-            f"Drink id={drink_item['id']} (name={drink_item['name']!r}) was returned "
-            f"but not all its ingredients are in the cabinet."
-        )
-
-    # Direction 2: Every drink with ALL ingredients in cabinet must be in the response
-    for expected_id in expected_available_ids:
-        assert expected_id in returned_ids, (
-            f"Drink id={expected_id} has all ingredients in cabinet but was NOT returned."
-        )
-
-    sqlite_conn.close()
-
-
-# ---------------------------------------------------------------------------
-# Unit tests for GET /drinks/:id  (task 2.3, Requirements 3.4)
-# ---------------------------------------------------------------------------
-
-_SCHEMA_WITH_RECIPES = _SCHEMA + """
 CREATE TABLE IF NOT EXISTS recipes (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     drink_id     INTEGER NOT NULL UNIQUE,
@@ -284,52 +60,251 @@ CREATE TABLE IF NOT EXISTS recipes (
 """
 
 
-def _make_sqlite_conn_with_recipes() -> sqlite3.Connection:
-    """Return a SQLite connection with the full schema (including recipes)."""
+def _make_db() -> sqlite3.Connection:
+    """Return a fresh in-memory SQLite connection with the full schema applied."""
     conn = sqlite3.connect(":memory:", check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.executescript(_SCHEMA_WITH_RECIPES)
+    conn.executescript(_SCHEMA)
     conn.commit()
     return conn
 
 
-def _seed_drink(conn, *, name="Margarita", abv=150, recipe_type="inline",
-                image_url=None, instructions="Shake well.", url=None,
-                ingredient_names=("Tequila", "Lime Juice")):
-    """Insert a drink + recipe + ingredients into the SQLite DB; return drink_id."""
+class _FakeConnection:
+    """Makes a sqlite3.Connection look like a mysql-connector connection."""
+
+    def __init__(self, sqlite_conn: sqlite3.Connection) -> None:
+        self._conn = sqlite_conn
+
+    def cursor(self, dictionary: bool = False):
+        cur = self._conn.cursor()
+        return _DictCursor(cur) if dictionary else cur
+
+    def close(self):
+        pass  # keep the underlying connection alive across calls
+
+    def commit(self):
+        self._conn.commit()
+
+
+class _DictCursor:
+    """Wraps sqlite3.Cursor so fetchall/fetchone return dicts, like mysql-connector."""
+
+    def __init__(self, cursor: sqlite3.Cursor) -> None:
+        self._cur = cursor
+
+    def execute(self, query: str, params=None):
+        # Translate MySQL placeholders and boolean literals to SQLite equivalents
+        q = query.replace("%s", "?").replace("= TRUE", "= 1").replace("= FALSE", "= 0")
+        self._cur.execute(q, params) if params is not None else self._cur.execute(q)
+
+    def fetchall(self):
+        cols = [d[0] for d in self._cur.description]
+        return [dict(zip(cols, row)) for row in self._cur.fetchall()]
+
+    def fetchone(self):
+        row = self._cur.fetchone()
+        if row is None:
+            return None
+        cols = [d[0] for d in self._cur.description]
+        return dict(zip(cols, row))
+
+    def close(self):
+        self._cur.close()
+
+    @property
+    def lastrowid(self):
+        return self._cur.lastrowid
+
+
+# ===========================================================================
+# Test client factory
+# ===========================================================================
+
+def make_client(sqlite_conn: sqlite3.Connection) -> TestClient:
+    """Return a TestClient whose get_connection is patched to use sqlite_conn."""
+    fake = _FakeConnection(sqlite_conn)
+    # The patch is entered here and left open for the duration of the test.
+    # Tests that need the patch active only during the request can use the
+    # context-manager form directly; this helper covers the common case.
+    patcher = patch.object(app_module, "get_connection", return_value=fake)
+    patcher.start()
+    # Attach the patcher so callers can stop it if needed (pytest fixtures handle cleanup)
+    client = TestClient(app)
+    client._kiro_patcher = patcher  # type: ignore[attr-defined]
+    return client
+
+
+@pytest.fixture
+def db():
+    """Pytest fixture: fresh in-memory DB, auto-closed after each test."""
+    conn = _make_db()
+    yield conn
+    conn.close()
+
+
+@pytest.fixture
+def client(db):
+    """Pytest fixture: TestClient patched against the `db` fixture connection."""
+    c = make_client(db)
+    yield c
+    c._kiro_patcher.stop()
+
+
+# ===========================================================================
+# Seed helpers
+# ===========================================================================
+
+def seed_ingredients(conn, *items):
+    """Insert ingredients. Each item is (name, in_cabinet: bool).
+    Returns list of inserted IDs in the same order."""
+    ids = []
+    for name, in_cabinet in items:
+        cur = conn.execute(
+            "INSERT INTO ingredients (name, in_cabinet) VALUES (?, ?)",
+            (name, 1 if in_cabinet else 0),
+        )
+        ids.append(cur.lastrowid)
+    conn.commit()
+    return ids
+
+
+def seed_drink(conn, *, name="Margarita", abv=150, recipe_type="inline",
+               image_url=None, instructions="Shake well.", url=None,
+               ingredient_names=("Tequila", "Lime Juice")):
+    """Insert a drink + recipe + ingredients; return the new drink_id."""
     cur = conn.execute(
         "INSERT INTO drinks (name, image_url, abv, recipe_type) VALUES (?, ?, ?, ?)",
         (name, image_url, abv, recipe_type),
     )
     drink_id = cur.lastrowid
-
     conn.execute(
         "INSERT INTO recipes (drink_id, instructions, url) VALUES (?, ?, ?)",
         (drink_id, instructions, url),
     )
-
     for ing_name in ingredient_names:
-        # Insert ingredient if not already present
         conn.execute(
-            "INSERT OR IGNORE INTO ingredients (name, in_cabinet) VALUES (?, 1)",
-            (ing_name,),
+            "INSERT OR IGNORE INTO ingredients (name, in_cabinet) VALUES (?, 1)", (ing_name,)
         )
-        ing_row = conn.execute(
+        row = conn.execute(
             "SELECT id FROM ingredients WHERE name = ?", (ing_name,)
         ).fetchone()
         conn.execute(
             "INSERT INTO drink_ingredients (drink_id, ingredient_id) VALUES (?, ?)",
-            (drink_id, ing_row[0]),
+            (drink_id, row[0]),
         )
-
     conn.commit()
     return drink_id
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Hypothesis strategies
+# ===========================================================================
+
+_name_st = st.text(
+    alphabet=st.characters(whitelist_categories=("Lu", "Ll", "Nd"), min_codepoint=32),
+    min_size=1,
+    max_size=40,
+)
+
+_ingredient_st = st.fixed_dictionaries({"name": _name_st, "in_cabinet": st.booleans()})
+
+
+def _drink_st(num_ingredients: int):
+    if num_ingredients == 0:
+        return st.nothing()
+    return st.fixed_dictionaries({
+        "name": _name_st,
+        "abv": st.integers(min_value=0, max_value=1000),
+        "recipe_type": st.sampled_from(["inline", "link"]),
+        "ingredient_indices": st.lists(
+            st.integers(min_value=0, max_value=num_ingredients - 1),
+            min_size=1,
+            max_size=min(4, num_ingredients),
+            unique=True,
+        ),
+    })
+
+
+# ===========================================================================
+# Property 1: Cabinet filtering correctness
+# ===========================================================================
+
+@settings(max_examples=100)
+@given(
+    ingredients=st.lists(_ingredient_st, min_size=1, max_size=8).filter(
+        lambda lst: len({i["name"] for i in lst}) == len(lst)
+    ),
+    drinks_seed=st.data(),
+)
+def test_property_1_cabinet_filtering_correctness(ingredients, drinks_seed):
+    """Property 1: Cabinet filtering correctness.
+
+    GET /drinks returns ONLY drinks whose every ingredient is in the cabinet,
+    and ALL such drinks.
+
+    # Feature: drink-menu-recipe-book, Property 1: Cabinet filtering correctness
+    Validates: Requirements 1.2
+    """
+    num_ingredients = len(ingredients)
+    drinks = drinks_seed.draw(st.lists(_drink_st(num_ingredients), min_size=0, max_size=6))
+
+    conn = _make_db()
+
+    ingredient_ids = []
+    for ing in ingredients:
+        cur = conn.execute(
+            "INSERT INTO ingredients (name, in_cabinet) VALUES (?, ?)",
+            (ing["name"], 1 if ing["in_cabinet"] else 0),
+        )
+        ingredient_ids.append(cur.lastrowid)
+    conn.commit()
+
+    drink_ids = []
+    for drink in drinks:
+        cur = conn.execute(
+            "INSERT INTO drinks (name, image_url, abv, recipe_type) VALUES (?, ?, ?, ?)",
+            (drink["name"], None, drink["abv"], drink["recipe_type"]),
+        )
+        drink_id = cur.lastrowid
+        drink_ids.append(drink_id)
+        for idx in drink["ingredient_indices"]:
+            conn.execute(
+                "INSERT INTO drink_ingredients (drink_id, ingredient_id) VALUES (?, ?)",
+                (drink_id, ingredient_ids[idx]),
+            )
+    conn.commit()
+
+    # Oracle: drinks where every ingredient is in the cabinet
+    cabinet_set = {ingredient_ids[i] for i, ing in enumerate(ingredients) if ing["in_cabinet"]}
+    expected_ids = {
+        drink_id
+        for drink, drink_id in zip(drinks, drink_ids)
+        if {ingredient_ids[idx] for idx in drink["ingredient_indices"]}.issubset(cabinet_set)
+    }
+
+    with patch.object(app_module, "get_connection", return_value=_FakeConnection(conn)):
+        response = TestClient(app).get("/drinks")
+
+    assert response.status_code == 200
+    returned_ids = {d["id"] for d in response.json()}
+
+    for drink_item in response.json():
+        assert drink_item["id"] in expected_ids, (
+            f"Drink id={drink_item['id']} ({drink_item['name']!r}) returned but not all "
+            f"ingredients are in cabinet."
+        )
+    for expected_id in expected_ids:
+        assert expected_id in returned_ids, (
+            f"Drink id={expected_id} has all ingredients in cabinet but was NOT returned."
+        )
+
+    conn.close()
+
+
+# ===========================================================================
 # Property 6: Recipe type round-trip
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 @settings(max_examples=100)
 @given(
@@ -340,67 +315,45 @@ def _seed_drink(conn, *, name="Margarita", abv=150, recipe_type="inline",
 def test_property_6_recipe_type_round_trip(name, abv, recipe_type):
     """Property 6: Recipe type round-trip.
 
-    For any drink created with a given recipe_type ('inline' or 'link'),
-    GET /drinks/:id should return a recipe_type field whose value matches
-    the type used at creation.
+    GET /drinks/:id returns a recipe_type that matches the value used at creation.
 
-    Validates: Requirements 3.4
     # Feature: drink-menu-recipe-book, Property 6: Recipe type round-trip
+    Validates: Requirements 3.4
     """
-    sqlite_conn = _make_sqlite_conn_with_recipes()
-
-    instructions = "Shake well." if recipe_type == "inline" else None
-    url = "https://example.com/recipe" if recipe_type == "link" else None
-
-    drink_id = _seed_drink(
-        sqlite_conn,
+    conn = _make_db()
+    drink_id = seed_drink(
+        conn,
         name=name,
         abv=abv,
         recipe_type=recipe_type,
-        instructions=instructions,
-        url=url,
+        instructions="Shake well." if recipe_type == "inline" else None,
+        url="https://example.com/recipe" if recipe_type == "link" else None,
     )
 
-    fake_conn = _FakeConnection(sqlite_conn)
-    with patch.object(app_module, "get_connection", return_value=fake_conn):
-        client = TestClient(app)
-        response = client.get(f"/drinks/{drink_id}")
+    with patch.object(app_module, "get_connection", return_value=_FakeConnection(conn)):
+        response = TestClient(app).get(f"/drinks/{drink_id}")
 
     assert response.status_code == 200
-    data = response.json()
-    assert data["recipe_type"] == recipe_type, (
-        f"Expected recipe_type={recipe_type!r} but got {data['recipe_type']!r} "
-        f"for drink name={name!r}, abv={abv}"
-    )
+    assert response.json()["recipe_type"] == recipe_type
+    conn.close()
 
-    sqlite_conn.close()
 
+# ===========================================================================
+# Unit tests: GET /drinks/:id
+# ===========================================================================
 
 class TestGetDrinkById:
-    """Unit tests for GET /drinks/{drink_id}."""
+    """Unit tests for GET /drinks/{drink_id}. Requirements 3.4"""
 
-    def test_returns_drink_with_all_fields(self):
-        """A found drink includes id, name, image_url, abv, recipe_type,
-        ingredients, instructions, and url."""
-        sqlite_conn = _make_sqlite_conn_with_recipes()
-        drink_id = _seed_drink(
-            sqlite_conn,
-            name="Margarita",
-            abv=150,
-            recipe_type="inline",
+    def test_returns_drink_with_all_fields(self, db, client):
+        drink_id = seed_drink(
+            db,
+            name="Margarita", abv=150, recipe_type="inline",
             image_url="https://example.com/margarita.jpg",
             instructions="Combine ingredients.\nShake well.",
-            url=None,
             ingredient_names=["Tequila", "Triple Sec", "Lime Juice"],
         )
-
-        fake_conn = _FakeConnection(sqlite_conn)
-        with patch.object(app_module, "get_connection", return_value=fake_conn):
-            client = TestClient(app)
-            response = client.get(f"/drinks/{drink_id}")
-
-        assert response.status_code == 200
-        data = response.json()
+        data = client.get(f"/drinks/{drink_id}").json()
         assert data["id"] == drink_id
         assert data["name"] == "Margarita"
         assert data["image_url"] == "https://example.com/margarita.jpg"
@@ -410,175 +363,62 @@ class TestGetDrinkById:
         assert data["url"] is None
         assert sorted(data["ingredients"]) == ["Lime Juice", "Tequila", "Triple Sec"]
 
-        sqlite_conn.close()
-
-    def test_returns_404_for_nonexistent_drink(self):
-        """A request for a drink ID that does not exist returns 404 with error body."""
-        sqlite_conn = _make_sqlite_conn_with_recipes()
-
-        fake_conn = _FakeConnection(sqlite_conn)
-        with patch.object(app_module, "get_connection", return_value=fake_conn):
-            client = TestClient(app)
-            response = client.get("/drinks/9999")
-
+    def test_returns_404_for_nonexistent_drink(self, client):
+        response = client.get("/drinks/9999")
         assert response.status_code == 404
         assert response.json() == {"error": "Not found"}
 
-        sqlite_conn.close()
-
-    def test_link_type_drink_returns_url_and_null_instructions(self):
-        """A link-type drink returns the url field and null instructions."""
-        sqlite_conn = _make_sqlite_conn_with_recipes()
-        drink_id = _seed_drink(
-            sqlite_conn,
-            name="Mojito",
-            abv=80,
-            recipe_type="link",
-            instructions=None,
-            url="https://example.com/mojito-recipe",
+    def test_link_type_drink_returns_url_and_null_instructions(self, db, client):
+        drink_id = seed_drink(
+            db, name="Mojito", abv=80, recipe_type="link",
+            instructions=None, url="https://example.com/mojito-recipe",
             ingredient_names=["Rum", "Mint"],
         )
-
-        fake_conn = _FakeConnection(sqlite_conn)
-        with patch.object(app_module, "get_connection", return_value=fake_conn):
-            client = TestClient(app)
-            response = client.get(f"/drinks/{drink_id}")
-
-        assert response.status_code == 200
-        data = response.json()
+        data = client.get(f"/drinks/{drink_id}").json()
         assert data["recipe_type"] == "link"
         assert data["url"] == "https://example.com/mojito-recipe"
         assert data["instructions"] is None
 
-        sqlite_conn.close()
-
-    def test_ingredients_list_is_present_and_ordered(self):
-        """The ingredients field is a list of ingredient name strings."""
-        sqlite_conn = _make_sqlite_conn_with_recipes()
-        drink_id = _seed_drink(
-            sqlite_conn,
-            ingredient_names=["Vodka", "Orange Juice", "Grenadine"],
-        )
-
-        fake_conn = _FakeConnection(sqlite_conn)
-        with patch.object(app_module, "get_connection", return_value=fake_conn):
-            client = TestClient(app)
-            response = client.get(f"/drinks/{drink_id}")
-
-        assert response.status_code == 200
-        data = response.json()
+    def test_ingredients_list_is_present(self, db, client):
+        drink_id = seed_drink(db, ingredient_names=["Vodka", "Orange Juice", "Grenadine"])
+        data = client.get(f"/drinks/{drink_id}").json()
         assert isinstance(data["ingredients"], list)
         assert sorted(data["ingredients"]) == sorted(["Vodka", "Orange Juice", "Grenadine"])
 
-        sqlite_conn.close()
-
-    def test_drink_with_no_image_url_returns_null(self):
-        """A drink without an image URL returns null for image_url."""
-        sqlite_conn = _make_sqlite_conn_with_recipes()
-        drink_id = _seed_drink(sqlite_conn, image_url=None)
-
-        fake_conn = _FakeConnection(sqlite_conn)
-        with patch.object(app_module, "get_connection", return_value=fake_conn):
-            client = TestClient(app)
-            response = client.get(f"/drinks/{drink_id}")
-
-        assert response.status_code == 200
-        assert response.json()["image_url"] is None
-
-        sqlite_conn.close()
+    def test_drink_with_no_image_url_returns_null(self, db, client):
+        drink_id = seed_drink(db, image_url=None)
+        assert client.get(f"/drinks/{drink_id}").json()["image_url"] is None
 
 
-# ---------------------------------------------------------------------------
-# Unit tests for GET /ingredients  (task 2.5, Requirements 2.2)
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Unit tests: GET /ingredients
+# ===========================================================================
 
 class TestGetIngredients:
-    """Unit tests for GET /ingredients."""
+    """Unit tests for GET /ingredients. Requirements 2.2"""
 
-    def _make_db(self):
-        """Return a fresh in-memory SQLite connection with the base schema."""
-        return _make_sqlite_conn()
-
-    def test_returns_only_in_cabinet_ingredients(self):
-        """Only ingredients with in_cabinet=true are returned."""
-        conn = self._make_db()
-        conn.execute("INSERT INTO ingredients (name, in_cabinet) VALUES (?, ?)", ("Tequila", 1))
-        conn.execute("INSERT INTO ingredients (name, in_cabinet) VALUES (?, ?)", ("Vodka", 0))
-        conn.execute("INSERT INTO ingredients (name, in_cabinet) VALUES (?, ?)", ("Rum", 1))
-        conn.commit()
-
-        fake_conn = _FakeConnection(conn)
-        with patch.object(app_module, "get_connection", return_value=fake_conn):
-            client = TestClient(app)
-            response = client.get("/ingredients")
-
-        assert response.status_code == 200
-        data = response.json()
+    def test_returns_only_in_cabinet_ingredients(self, db, client):
+        seed_ingredients(db, ("Tequila", True), ("Vodka", False), ("Rum", True))
+        data = client.get("/ingredients").json()
         names = {item["name"] for item in data}
         assert names == {"Tequila", "Rum"}
-        assert "Vodka" not in names
-        conn.close()
 
-    def test_returns_correct_json_shape(self):
-        """Each ingredient object has id, name, and in_cabinet fields."""
-        conn = self._make_db()
-        conn.execute("INSERT INTO ingredients (name, in_cabinet) VALUES (?, ?)", ("Gin", 1))
-        conn.commit()
-
-        fake_conn = _FakeConnection(conn)
-        with patch.object(app_module, "get_connection", return_value=fake_conn):
-            client = TestClient(app)
-            response = client.get("/ingredients")
-
-        assert response.status_code == 200
-        data = response.json()
+    def test_returns_correct_json_shape(self, db, client):
+        seed_ingredients(db, ("Gin", True))
+        data = client.get("/ingredients").json()
         assert len(data) == 1
-        item = data[0]
-        assert "id" in item
-        assert item["name"] == "Gin"
-        assert item["in_cabinet"] is True
-        conn.close()
+        assert {"id", "name", "in_cabinet"} <= data[0].keys()
+        assert data[0]["name"] == "Gin"
+        assert data[0]["in_cabinet"] is True
 
-    def test_returns_empty_list_when_none_in_cabinet(self):
-        """Returns an empty list when no ingredients are in the cabinet."""
-        conn = self._make_db()
-        conn.execute("INSERT INTO ingredients (name, in_cabinet) VALUES (?, ?)", ("Whiskey", 0))
-        conn.commit()
+    def test_returns_empty_list_when_none_in_cabinet(self, db, client):
+        seed_ingredients(db, ("Whiskey", False))
+        assert client.get("/ingredients").json() == []
 
-        fake_conn = _FakeConnection(conn)
-        with patch.object(app_module, "get_connection", return_value=fake_conn):
-            client = TestClient(app)
-            response = client.get("/ingredients")
+    def test_returns_empty_list_when_table_is_empty(self, client):
+        assert client.get("/ingredients").json() == []
 
-        assert response.status_code == 200
-        assert response.json() == []
-        conn.close()
-
-    def test_returns_empty_list_when_table_is_empty(self):
-        """Returns an empty list when the ingredients table has no rows."""
-        conn = self._make_db()
-
-        fake_conn = _FakeConnection(conn)
-        with patch.object(app_module, "get_connection", return_value=fake_conn):
-            client = TestClient(app)
-            response = client.get("/ingredients")
-
-        assert response.status_code == 200
-        assert response.json() == []
-        conn.close()
-
-    def test_in_cabinet_field_is_boolean(self):
-        """The in_cabinet field in the response is a JSON boolean, not an integer."""
-        conn = self._make_db()
-        conn.execute("INSERT INTO ingredients (name, in_cabinet) VALUES (?, ?)", ("Lime Juice", 1))
-        conn.commit()
-
-        fake_conn = _FakeConnection(conn)
-        with patch.object(app_module, "get_connection", return_value=fake_conn):
-            client = TestClient(app)
-            response = client.get("/ingredients")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data[0]["in_cabinet"] is True  # must be bool True, not int 1
-        conn.close()
+    def test_in_cabinet_field_is_boolean(self, db, client):
+        seed_ingredients(db, ("Lime Juice", True))
+        data = client.get("/ingredients").json()
+        assert data[0]["in_cabinet"] is True  # bool, not int 1
