@@ -28,7 +28,7 @@ Implement the drink menu and recipe book web application incrementally: database
     - Return 404 if drink not found
     - _Requirements: 3.4_
 
-  - [ ]* 2.4 Write property test for recipe type round-trip
+  - [x] 2.4 Write property test for recipe type round-trip
     - **Property 6: Recipe type round-trip**
     - **Validates: Requirements 3.4**
 

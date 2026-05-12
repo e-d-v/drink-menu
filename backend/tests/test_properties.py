@@ -1,6 +1,7 @@
 """Property-based tests for the Drink Menu & Recipe Book API.
 
 # Feature: drink-menu-recipe-book, Property 1: Cabinet filtering correctness
+# Feature: drink-menu-recipe-book, Property 6: Recipe type round-trip
 """
 
 import sqlite3
@@ -324,6 +325,55 @@ def _seed_drink(conn, *, name="Margarita", abv=150, recipe_type="inline",
 
     conn.commit()
     return drink_id
+
+
+# ---------------------------------------------------------------------------
+# Property 6: Recipe type round-trip
+# ---------------------------------------------------------------------------
+
+@settings(max_examples=100)
+@given(
+    name=_name_st,
+    abv=st.integers(min_value=0, max_value=1000),
+    recipe_type=st.sampled_from(["inline", "link"]),
+)
+def test_property_6_recipe_type_round_trip(name, abv, recipe_type):
+    """Property 6: Recipe type round-trip.
+
+    For any drink created with a given recipe_type ('inline' or 'link'),
+    GET /drinks/:id should return a recipe_type field whose value matches
+    the type used at creation.
+
+    Validates: Requirements 3.4
+    # Feature: drink-menu-recipe-book, Property 6: Recipe type round-trip
+    """
+    sqlite_conn = _make_sqlite_conn_with_recipes()
+
+    instructions = "Shake well." if recipe_type == "inline" else None
+    url = "https://example.com/recipe" if recipe_type == "link" else None
+
+    drink_id = _seed_drink(
+        sqlite_conn,
+        name=name,
+        abv=abv,
+        recipe_type=recipe_type,
+        instructions=instructions,
+        url=url,
+    )
+
+    fake_conn = _FakeConnection(sqlite_conn)
+    with patch.object(app_module, "get_connection", return_value=fake_conn):
+        client = TestClient(app)
+        response = client.get(f"/drinks/{drink_id}")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["recipe_type"] == recipe_type, (
+        f"Expected recipe_type={recipe_type!r} but got {data['recipe_type']!r} "
+        f"for drink name={name!r}, abv={abv}"
+    )
+
+    sqlite_conn.close()
 
 
 class TestGetDrinkById:
