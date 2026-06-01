@@ -53,6 +53,45 @@ def _create_session(cursor, admin_id: int) -> tuple[str, datetime]:
     return token, expires_at
 
 
+def _require_auth(request: Request):
+    """Validate the Authorization: Bearer <token> header against the sessions table.
+
+    Returns None on success (valid, non-expired token).
+    Returns a 401 JSONResponse if the header is missing, malformed, token not
+    found, or the session has expired.
+
+    Requirements: 4.6
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+    token = auth_header[len("Bearer "):]
+    if not token:
+        return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+    conn = get_connection()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(
+            "SELECT token, expires_at FROM sessions WHERE token = %s",
+            (token,),
+        )
+        session = cursor.fetchone()
+        cursor.close()
+    finally:
+        conn.close()
+
+    if session is None:
+        return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    if session["expires_at"] < now:
+        return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+    return None
+
+
 @app.get("/health")
 def health_check():
     """Health check endpoint."""
@@ -252,3 +291,75 @@ def get_drink(drink_id: int):
 
     drink["ingredients"] = [row["name"] for row in ingredient_rows]
     return drink
+
+
+# ---------------------------------------------------------------------------
+# Admin — ingredients
+# ---------------------------------------------------------------------------
+
+@app.get("/admin/ingredients")
+async def admin_list_ingredients(request: Request):
+    """List all ingredients with cabinet status. Requirements: 5.1"""
+    err = _require_auth(request)
+    if err:
+        return err
+    # TODO: implement in task 4.1
+    return []
+
+@app.post("/admin/ingredients")
+async def admin_add_ingredient(request: Request):
+    """Add a new ingredient. Requirements: 5.3, 5.4"""
+    err = _require_auth(request)
+    if err:
+        return err
+    # TODO: implement in task 4.2
+    return JSONResponse(status_code=501, content={"error": "Not implemented"})
+
+@app.patch("/admin/ingredients/{ingredient_id}")
+async def admin_toggle_ingredient(ingredient_id: int, request: Request):
+    """Toggle cabinet status. Requirements: 5.2"""
+    err = _require_auth(request)
+    if err:
+        return err
+    # TODO: implement in task 4.3
+    return JSONResponse(status_code=501, content={"error": "Not implemented"})
+
+# ---------------------------------------------------------------------------
+# Admin — drinks
+# ---------------------------------------------------------------------------
+
+@app.get("/admin/drinks")
+async def admin_list_drinks(request: Request):
+    """List all drinks regardless of cabinet state. Requirements: 8.1"""
+    err = _require_auth(request)
+    if err:
+        return err
+    # TODO: implement in task 5.1
+    return []
+
+@app.post("/admin/drinks")
+async def admin_create_drink(request: Request):
+    """Create drink + recipe. Requirements: 6.2, 7.2, 10.1, 10.2, 10.4"""
+    err = _require_auth(request)
+    if err:
+        return err
+    # TODO: implement in task 5.3
+    return JSONResponse(status_code=501, content={"error": "Not implemented"})
+
+@app.put("/admin/drinks/{drink_id}")
+async def admin_update_drink(drink_id: int, request: Request):
+    """Update drink + recipe. Requirements: 8.3"""
+    err = _require_auth(request)
+    if err:
+        return err
+    # TODO: implement in task 5.8
+    return JSONResponse(status_code=501, content={"error": "Not implemented"})
+
+@app.delete("/admin/drinks/{drink_id}")
+async def admin_delete_drink(drink_id: int, request: Request):
+    """Delete drink + recipe. Requirements: 8.4"""
+    err = _require_auth(request)
+    if err:
+        return err
+    # TODO: implement in task 5.10
+    return JSONResponse(status_code=501, content={"error": "Not implemented"})

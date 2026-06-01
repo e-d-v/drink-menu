@@ -46,12 +46,12 @@ Implement the drink menu and recipe book web application incrementally: database
     - Delete session row from `sessions` table
     - _Requirements: 4.5_
 
-  - [ ] 3.3 Implement auth middleware for all `/admin/*` routes
+  - [x] 3.3 Implement auth middleware for all `/admin/*` routes
     - Validate `Authorization: Bearer <token>` header against `sessions` table
     - Return 401 if missing, invalid, or expired
     - _Requirements: 4.6_
 
-  - [ ] 3.4 Write unit tests for auth endpoints
+  - [x] 3.4 Write unit tests for auth endpoints
     - Login returns token on valid credentials
     - Login returns 401 on invalid credentials
     - Logout invalidates token (subsequent request with same token returns 401)

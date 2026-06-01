@@ -7,6 +7,7 @@
 import sqlite3
 import sys
 import os
+from datetime import datetime
 from unittest.mock import patch
 
 import bcrypt
@@ -115,14 +116,27 @@ class _DictCursor:
 
     def fetchall(self):
         cols = [d[0] for d in self._cur.description]
-        return [dict(zip(cols, row)) for row in self._cur.fetchall()]
+        return [dict(zip(cols, self._coerce_row(row))) for row in self._cur.fetchall()]
 
     def fetchone(self):
         row = self._cur.fetchone()
         if row is None:
             return None
         cols = [d[0] for d in self._cur.description]
-        return dict(zip(cols, row))
+        return dict(zip(cols, self._coerce_row(row)))
+
+    @staticmethod
+    def _coerce_row(row):
+        """Convert ISO datetime strings to datetime objects (mimics MySQL driver)."""
+        result = []
+        for val in row:
+            if isinstance(val, str):
+                try:
+                    val = datetime.fromisoformat(val)
+                except ValueError:
+                    pass
+            result.append(val)
+        return result
 
     def close(self):
         self._cur.close()
@@ -568,6 +582,70 @@ class TestLogout:
         response = client.post(
             "/auth/logout",
             headers={"Authorization": "Token sometoken"},
+        )
+        assert response.status_code == 401
+        assert response.json() == {"error": "Unauthorized"}
+
+    def test_logout_invalidates_token_for_admin_routes(self, db, client):
+        """After logout, using the same token on an admin route returns 401."""
+        token = self._login(client, db)
+        # Confirm the token works before logout
+        response_before = client.get(
+            "/admin/ingredients",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response_before.status_code != 401, "Token should be valid before logout"
+        # Logout
+        client.post("/auth/logout", headers={"Authorization": f"Bearer {token}"})
+        # Now the same token must be rejected
+        response_after = client.get(
+            "/admin/ingredients",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response_after.status_code == 401
+        assert response_after.json() == {"error": "Unauthorized"}
+
+
+# ===========================================================================
+# Unit tests: Admin route authentication (Requirements 4.6)
+# ===========================================================================
+
+class TestAdminAuth:
+    """Every /admin/* endpoint must return 401 when no valid token is provided.
+
+    Requirements 4.6
+    """
+
+    ADMIN_ROUTES = [
+        ("GET",    "/admin/ingredients"),
+        ("POST",   "/admin/ingredients"),
+        ("PATCH",  "/admin/ingredients/1"),
+        ("GET",    "/admin/drinks"),
+        ("POST",   "/admin/drinks"),
+        ("PUT",    "/admin/drinks/1"),
+        ("DELETE", "/admin/drinks/1"),
+    ]
+
+    @pytest.mark.parametrize("method,path", ADMIN_ROUTES)
+    def test_missing_auth_header_returns_401(self, client, method, path):
+        """Request with no Authorization header returns 401."""
+        response = client.request(method, path)
+        assert response.status_code == 401
+        assert response.json() == {"error": "Unauthorized"}
+
+    @pytest.mark.parametrize("method,path", ADMIN_ROUTES)
+    def test_malformed_auth_header_returns_401(self, client, method, path):
+        """Request with malformed Authorization header returns 401."""
+        response = client.request(method, path, headers={"Authorization": "Token badtoken"})
+        assert response.status_code == 401
+        assert response.json() == {"error": "Unauthorized"}
+
+    @pytest.mark.parametrize("method,path", ADMIN_ROUTES)
+    def test_invalid_token_returns_401(self, client, method, path):
+        """Request with a token not in the sessions table returns 401."""
+        response = client.request(
+            method, path,
+            headers={"Authorization": "Bearer thisisnotavalidtoken"},
         )
         assert response.status_code == 401
         assert response.json() == {"error": "Unauthorized"}
