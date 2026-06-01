@@ -36,7 +36,7 @@ Implement the drink menu and recipe book web application incrementally: database
     - _Requirements: 2.2_
 
 - [ ] 3. Implement authentication endpoints
-  - [ ] 3.1 Implement `POST /auth/login` — validate credentials, create session token, return token
+  - [x] 3.1 Implement `POST /auth/login` — validate credentials, create session token, return token
     - Use bcrypt to verify password hash
     - Store session in `sessions` table with expiry
     - Return 401 on invalid credentials

@@ -9,6 +9,7 @@ import sys
 import os
 from unittest.mock import patch
 
+import bcrypt
 import pytest
 from fastapi.testclient import TestClient
 from hypothesis import given, settings
@@ -56,6 +57,20 @@ CREATE TABLE IF NOT EXISTS recipes (
     instructions TEXT,
     url          TEXT,
     FOREIGN KEY (drink_id) REFERENCES drinks(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS admins (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token      TEXT PRIMARY KEY,
+    admin_id   INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    FOREIGN KEY (admin_id) REFERENCES admins(id) ON DELETE CASCADE
 );
 """
 
@@ -197,9 +212,15 @@ def seed_drink(conn, *, name="Margarita", abv=150, recipe_type="inline",
     return drink_id
 
 
-# ===========================================================================
-# Hypothesis strategies
-# ===========================================================================
+def seed_admin(conn, username: str = "admin", password: str = "secret") -> int:
+    """Insert an admin with a bcrypt-hashed password; return the admin id."""
+    password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    cur = conn.execute(
+        "INSERT INTO admins (username, password_hash) VALUES (?, ?)",
+        (username, password_hash),
+    )
+    conn.commit()
+    return cur.lastrowid
 
 _name_st = st.text(
     alphabet=st.characters(whitelist_categories=("Lu", "Ll", "Nd"), min_codepoint=32),
@@ -422,3 +443,75 @@ class TestGetIngredients:
         seed_ingredients(db, ("Lime Juice", True))
         data = client.get("/ingredients").json()
         assert data[0]["in_cabinet"] is True  # bool, not int 1
+
+
+# ===========================================================================
+# Unit tests: POST /auth/login
+# ===========================================================================
+
+class TestLogin:
+    """Unit tests for POST /auth/login. Requirements 4.1, 4.2, 4.3"""
+
+    def test_valid_credentials_return_token(self, db, client):
+        """Valid username + password returns 200 with a token string."""
+        seed_admin(db, username="admin", password="secret")
+        response = client.post("/auth/login", json={"username": "admin", "password": "secret"})
+        assert response.status_code == 200
+        data = response.json()
+        assert "token" in data
+        assert isinstance(data["token"], str)
+        assert len(data["token"]) > 0
+
+    def test_token_is_stored_in_sessions_table(self, db, client):
+        """After a successful login the token must exist in the sessions table."""
+        seed_admin(db, username="admin", password="secret")
+        response = client.post("/auth/login", json={"username": "admin", "password": "secret"})
+        assert response.status_code == 200
+        token = response.json()["token"]
+        row = db.execute("SELECT token FROM sessions WHERE token = ?", (token,)).fetchone()
+        assert row is not None, "Token was not persisted in the sessions table"
+
+    def test_session_has_future_expiry(self, db, client):
+        """The stored session must have an expires_at in the future."""
+        seed_admin(db, username="admin", password="secret")
+        client.post("/auth/login", json={"username": "admin", "password": "secret"})
+        row = db.execute("SELECT expires_at FROM sessions").fetchone()
+        assert row is not None
+        # expires_at is stored as an ISO-format string by SQLite
+        from datetime import datetime
+        expires_at = datetime.fromisoformat(str(row[0]))
+        assert expires_at > datetime.utcnow(), "Session expiry should be in the future"
+
+    def test_wrong_password_returns_401(self, db, client):
+        """Wrong password returns 401 Unauthorized."""
+        seed_admin(db, username="admin", password="secret")
+        response = client.post("/auth/login", json={"username": "admin", "password": "wrong"})
+        assert response.status_code == 401
+        assert response.json() == {"error": "Unauthorized"}
+
+    def test_unknown_username_returns_401(self, db, client):
+        """Unknown username returns 401 Unauthorized."""
+        response = client.post("/auth/login", json={"username": "nobody", "password": "secret"})
+        assert response.status_code == 401
+        assert response.json() == {"error": "Unauthorized"}
+
+    def test_missing_username_returns_401(self, db, client):
+        """Missing username field returns 401."""
+        response = client.post("/auth/login", json={"password": "secret"})
+        assert response.status_code == 401
+        assert response.json() == {"error": "Unauthorized"}
+
+    def test_missing_password_returns_401(self, db, client):
+        """Missing password field returns 401."""
+        response = client.post("/auth/login", json={"username": "admin"})
+        assert response.status_code == 401
+        assert response.json() == {"error": "Unauthorized"}
+
+    def test_each_login_creates_a_new_token(self, db, client):
+        """Two successful logins produce two distinct tokens."""
+        seed_admin(db, username="admin", password="secret")
+        r1 = client.post("/auth/login", json={"username": "admin", "password": "secret"})
+        r2 = client.post("/auth/login", json={"username": "admin", "password": "secret"})
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        assert r1.json()["token"] != r2.json()["token"]

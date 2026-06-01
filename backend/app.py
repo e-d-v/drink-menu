@@ -1,10 +1,18 @@
 """Drink Menu & Recipe Book — FastAPI application."""
 
-from fastapi import FastAPI
+import os
+import secrets
+from datetime import datetime, timedelta, timezone
+
+import bcrypt
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from db import get_connection
+
+# Session lifetime in hours
+SESSION_HOURS = int(os.environ.get("SESSION_HOURS", "24"))
 
 app = FastAPI(title="Drink Menu & Recipe Book API")
 
@@ -17,10 +25,88 @@ app.add_middleware(
 )
 
 
+# ---------------------------------------------------------------------------
+# Auth helpers
+# ---------------------------------------------------------------------------
+
+def _get_admin_by_username(cursor, username: str):
+    """Return the admin row for *username*, or None if not found."""
+    cursor.execute(
+        "SELECT id, username, password_hash FROM admins WHERE username = %s",
+        (username,),
+    )
+    return cursor.fetchone()
+
+
+def _create_session(cursor, admin_id: int) -> tuple[str, datetime]:
+    """Insert a new session row and return (token, expires_at)."""
+    token = secrets.token_hex(32)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)  # store as naive UTC
+    expires_at = now + timedelta(hours=SESSION_HOURS)
+    cursor.execute(
+        """
+        INSERT INTO sessions (token, admin_id, created_at, expires_at)
+        VALUES (%s, %s, %s, %s)
+        """,
+        (token, admin_id, now, expires_at),
+    )
+    return token, expires_at
+
+
 @app.get("/health")
 def health_check():
     """Health check endpoint."""
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Auth endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/auth/login")
+async def login(request: Request):
+    """Authenticate an admin and return a session token.
+
+    Accepts JSON body: {"username": "...", "password": "..."}
+    Returns {"token": "..."} on success, 401 on invalid credentials.
+
+    Requirements 4.1, 4.2, 4.3
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid request"})
+
+    username = body.get("username", "")
+    password = body.get("password", "")
+
+    if not username or not password:
+        return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+    conn = get_connection()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        admin = _get_admin_by_username(cursor, username)
+
+        if admin is None:
+            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+        # Verify password against stored bcrypt hash
+        password_matches = bcrypt.checkpw(
+            password.encode("utf-8"),
+            admin["password_hash"].encode("utf-8"),
+        )
+        if not password_matches:
+            return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+        # Credentials valid — create a session
+        token, _ = _create_session(cursor, admin["id"])
+        conn.commit()
+        cursor.close()
+    finally:
+        conn.close()
+
+    return {"token": token}
 
 
 @app.get("/ingredients")
