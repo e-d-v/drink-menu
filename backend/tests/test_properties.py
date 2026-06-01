@@ -649,3 +649,70 @@ class TestAdminAuth:
         )
         assert response.status_code == 401
         assert response.json() == {"error": "Unauthorized"}
+
+
+# ===========================================================================
+# Property 8: API rejects unauthenticated admin requests
+# ===========================================================================
+
+_ADMIN_ENDPOINTS = [
+    ("GET",    "/admin/ingredients"),
+    ("POST",   "/admin/ingredients"),
+    ("PATCH",  "/admin/ingredients/1"),
+    ("GET",    "/admin/drinks"),
+    ("POST",   "/admin/drinks"),
+    ("PUT",    "/admin/drinks/1"),
+    ("DELETE", "/admin/drinks/1"),
+]
+
+_token_st = st.text(
+    alphabet=st.characters(
+        whitelist_categories=("Lu", "Ll", "Nd"),
+        max_codepoint=127,  # ASCII only — HTTP headers cannot carry non-ASCII bytes
+    ),
+    min_size=1,
+    max_size=64,
+)
+
+_auth_header_st = st.one_of(
+    # No Authorization header at all
+    st.just({}),
+    # Wrong scheme
+    st.builds(lambda t: {"Authorization": f"Token {t}"}, _token_st),
+    # Bearer with a random token that is never inserted into the sessions table
+    st.builds(lambda t: {"Authorization": f"Bearer {t}"}, _token_st),
+    # Empty Bearer value
+    st.just({"Authorization": "Bearer "}),
+    # Completely random header value
+    st.builds(lambda t: {"Authorization": t}, _token_st),
+)
+
+
+@settings(max_examples=100)
+@given(
+    endpoint=st.sampled_from(_ADMIN_ENDPOINTS),
+    headers=_auth_header_st,
+)
+def test_property_8_api_rejects_unauthenticated_admin_requests(endpoint, headers):
+    """Property 8: API rejects unauthenticated admin requests.
+
+    For any admin endpoint and any request that does not carry a valid session
+    token, the API must return 401 with {"error": "Unauthorized"}.
+
+    # Feature: drink-menu-recipe-book, Property 8: API rejects unauthenticated admin requests
+    Validates: Requirements 4.6
+    """
+    method, path = endpoint
+    conn = _make_db()
+
+    with patch.object(app_module, "get_connection", return_value=_FakeConnection(conn)):
+        response = TestClient(app).request(method, path, headers=headers)
+
+    assert response.status_code == 401, (
+        f"{method} {path} with headers={headers!r} returned {response.status_code}, expected 401"
+    )
+    assert response.json() == {"error": "Unauthorized"}, (
+        f"{method} {path} returned unexpected body: {response.json()!r}"
+    )
+
+    conn.close()

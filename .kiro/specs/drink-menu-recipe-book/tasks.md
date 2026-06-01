@@ -35,7 +35,7 @@ Implement the drink menu and recipe book web application incrementally: database
   - [x] 2.5 Implement `GET /ingredients` — return all ingredients with `in_cabinet = true`
     - _Requirements: 2.2_
 
-- [ ] 3. Implement authentication endpoints
+- [x] 3. Implement authentication endpoints
   - [x] 3.1 Implement `POST /auth/login` — validate credentials, create session token, return token
     - Use bcrypt to verify password hash
     - Store session in `sessions` table with expiry
@@ -58,7 +58,7 @@ Implement the drink menu and recipe book web application incrementally: database
     - Missing auth header returns 401 on all `/admin/*` routes
     - _Requirements: 4.2, 4.3, 4.5, 4.6_
 
-  - [ ]* 3.5 Write property test for API auth rejection
+  - [x] 3.5 Write property test for API auth rejection
     - **Property 8: API rejects unauthenticated admin requests**
     - **Validates: Requirements 4.6**
 
