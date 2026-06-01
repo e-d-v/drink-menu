@@ -42,7 +42,7 @@ Implement the drink menu and recipe book web application incrementally: database
     - Return 401 on invalid credentials
     - _Requirements: 4.1, 4.2, 4.3_
 
-  - [ ] 3.2 Implement `POST /auth/logout` — invalidate session token
+  - [x] 3.2 Implement `POST /auth/logout` — invalidate session token
     - Delete session row from `sessions` table
     - _Requirements: 4.5_
 

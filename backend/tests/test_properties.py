@@ -515,3 +515,59 @@ class TestLogin:
         assert r1.status_code == 200
         assert r2.status_code == 200
         assert r1.json()["token"] != r2.json()["token"]
+
+
+# ===========================================================================
+# Unit tests: POST /auth/logout
+# ===========================================================================
+
+class TestLogout:
+    """Unit tests for POST /auth/logout. Requirements 4.5"""
+
+    def _login(self, client, db):
+        """Helper: seed an admin, log in, and return the token."""
+        seed_admin(db, username="admin", password="secret")
+        response = client.post("/auth/login", json={"username": "admin", "password": "secret"})
+        assert response.status_code == 200
+        return response.json()["token"]
+
+    def test_logout_returns_200(self, db, client):
+        """Valid token in Authorization header returns 200."""
+        token = self._login(client, db)
+        response = client.post(
+            "/auth/logout",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 200
+
+    def test_logout_deletes_session_row(self, db, client):
+        """After logout the session row is removed from the sessions table."""
+        token = self._login(client, db)
+        client.post("/auth/logout", headers={"Authorization": f"Bearer {token}"})
+        row = db.execute("SELECT token FROM sessions WHERE token = ?", (token,)).fetchone()
+        assert row is None, "Session row should have been deleted after logout"
+
+    def test_logout_without_auth_header_returns_401(self, client):
+        """Request with no Authorization header returns 401."""
+        response = client.post("/auth/logout")
+        assert response.status_code == 401
+        assert response.json() == {"error": "Unauthorized"}
+
+    def test_logout_with_invalid_token_returns_200(self, db, client):
+        """Logout with a token that doesn't exist in the DB still returns 200 (idempotent)."""
+        seed_admin(db, username="admin", password="secret")
+        response = client.post(
+            "/auth/logout",
+            headers={"Authorization": "Bearer nonexistenttoken"},
+        )
+        # Deleting a non-existent row is a no-op; endpoint returns 200
+        assert response.status_code == 200
+
+    def test_logout_with_malformed_auth_header_returns_401(self, client):
+        """Authorization header without 'Bearer ' prefix returns 401."""
+        response = client.post(
+            "/auth/logout",
+            headers={"Authorization": "Token sometoken"},
+        )
+        assert response.status_code == 401
+        assert response.json() == {"error": "Unauthorized"}

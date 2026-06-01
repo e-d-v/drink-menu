@@ -109,6 +109,36 @@ async def login(request: Request):
     return {"token": token}
 
 
+@app.post("/auth/logout")
+async def logout(request: Request):
+    """Invalidate the current session token.
+
+    Expects an ``Authorization: Bearer <token>`` header.
+    Deletes the matching row from the ``sessions`` table and returns 200.
+    Returns 401 if the header is missing or the token is not found.
+
+    Requirements 4.5
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+    token = auth_header[len("Bearer "):]
+    if not token:
+        return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+
+    conn = get_connection()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("DELETE FROM sessions WHERE token = %s", (token,))
+        conn.commit()
+        cursor.close()
+    finally:
+        conn.close()
+
+    return JSONResponse(status_code=200, content={"message": "Logged out"})
+
+
 @app.get("/ingredients")
 def list_ingredients():
     """Return all ingredients where in_cabinet = true.
